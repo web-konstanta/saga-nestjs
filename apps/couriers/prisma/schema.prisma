@@ -1,0 +1,74 @@
+// delivery_db database. Couriers and their order assignments.
+
+generator client {
+  provider               = "prisma-client"
+  output                 = "../src/generated/prisma"
+  moduleFormat           = "cjs"
+  generatedFileExtension = "ts"
+  importFileExtension    = ""
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Courier {
+  id             String   @id
+  name           String
+  /// The order the courier is delivering. NULL means free.
+  currentOrderId String?  @unique @map("current_order_id") @db.Uuid
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("couriers")
+}
+
+enum AssignmentStatus {
+  ASSIGNED
+  REJECTED
+  RELEASED
+}
+
+/// Outcome of the assign command — success or rejection alike.
+model CourierAssignment {
+  id             String           @id @default(uuid()) @db.Uuid
+  idempotencyKey String           @unique @map("idempotency_key")
+  sagaId         String           @map("saga_id") @db.Uuid
+  orderId        String           @map("order_id") @db.Uuid
+  courierId      String?          @map("courier_id")
+  status         AssignmentStatus
+  reason         String?
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([sagaId])
+  @@map("courier_assignments")
+}
+
+// ─── @app/outbox service tables. Identical in every service. ───
+
+/// Outgoing messages: written in the same transaction as the business data;
+/// OutboxRelay sends them to RabbitMQ.
+model OutboxMessage {
+  id          String    @id @db.Uuid
+  routingKey  String    @map("routing_key")
+  payload     Json
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  publishedAt DateTime? @map("published_at") @db.Timestamptz(3)
+  attempts    Int       @default(0)
+  lockedUntil DateTime? @map("locked_until") @db.Timestamptz(3)
+  lastError   String?   @map("last_error")
+
+  @@index([publishedAt, createdAt])
+  @@map("outbox_messages")
+}
+
+/// Processed incoming messages: protection against redelivery.
+model InboxMessage {
+  messageId   String   @map("message_id")
+  handler     String
+  processedAt DateTime @default(now()) @map("processed_at") @db.Timestamptz(3)
+
+  @@id([messageId, handler])
+  @@index([processedAt])
+  @@map("inbox_messages")
+}
