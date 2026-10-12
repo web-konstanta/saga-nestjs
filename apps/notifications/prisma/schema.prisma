@@ -1,0 +1,59 @@
+// notifications_db database. Notifications sent to customers.
+
+generator client {
+  provider               = "prisma-client"
+  output                 = "../src/generated/prisma"
+  moduleFormat           = "cjs"
+  generatedFileExtension = "ts"
+  importFileExtension    = ""
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum NotificationKind {
+  ORDER_CONFIRMED
+  ORDER_CANCELLED
+}
+
+model Notification {
+  id         String           @id @default(uuid()) @db.Uuid
+  orderId    String           @map("order_id") @db.Uuid
+  customerId String           @map("customer_id")
+  kind       NotificationKind
+  message    String
+  createdAt  DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([customerId])
+  @@map("notifications")
+}
+
+// ─── @app/outbox service tables. Identical in every service. ───
+
+/// Outgoing messages: written in the same transaction as the business data;
+/// OutboxRelay sends them to RabbitMQ.
+model OutboxMessage {
+  id          String    @id @db.Uuid
+  routingKey  String    @map("routing_key")
+  payload     Json
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  publishedAt DateTime? @map("published_at") @db.Timestamptz(3)
+  attempts    Int       @default(0)
+  lockedUntil DateTime? @map("locked_until") @db.Timestamptz(3)
+  lastError   String?   @map("last_error")
+
+  @@index([publishedAt, createdAt])
+  @@map("outbox_messages")
+}
+
+/// Processed incoming messages: protection against redelivery.
+model InboxMessage {
+  messageId   String   @map("message_id")
+  handler     String
+  processedAt DateTime @default(now()) @map("processed_at") @db.Timestamptz(3)
+
+  @@id([messageId, handler])
+  @@index([processedAt])
+  @@map("inbox_messages")
+}
