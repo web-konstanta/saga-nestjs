@@ -1,0 +1,87 @@
+// inventory_db database. Stock levels and order reservations.
+
+generator client {
+  provider               = "prisma-client"
+  output                 = "../src/generated/prisma"
+  moduleFormat           = "cjs"
+  generatedFileExtension = "ts"
+  importFileExtension    = ""
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model StockItem {
+  sku       String   @id
+  /// Available for reservation. CHECK (available >= 0) is added manually in the migration.
+  available Int
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("stock_items")
+}
+
+enum ReservationStatus {
+  RESERVED
+  REJECTED
+  RELEASED
+}
+
+/// Outcome of the reserve_stock command — success or rejection alike. A repeated
+/// command gets the same reply via idempotencyKey without touching stock.
+model Reservation {
+  id             String            @id @default(uuid()) @db.Uuid
+  idempotencyKey String            @unique @map("idempotency_key")
+  sagaId         String            @map("saga_id") @db.Uuid
+  orderId        String            @map("order_id") @db.Uuid
+  status         ReservationStatus
+  reason         String?
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  items ReservationItem[]
+
+  @@index([sagaId])
+  @@map("reservations")
+}
+
+model ReservationItem {
+  id            Int    @id @default(autoincrement())
+  reservationId String @map("reservation_id") @db.Uuid
+  sku           String
+  qty           Int
+
+  reservation Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+
+  @@index([reservationId])
+  @@map("reservation_items")
+}
+
+// ─── @app/outbox service tables. Identical in every service. ───
+
+/// Outgoing messages: written in the same transaction as the business data;
+/// OutboxRelay sends them to RabbitMQ.
+model OutboxMessage {
+  id          String    @id @db.Uuid
+  routingKey  String    @map("routing_key")
+  payload     Json
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  publishedAt DateTime? @map("published_at") @db.Timestamptz(3)
+  attempts    Int       @default(0)
+  lockedUntil DateTime? @map("locked_until") @db.Timestamptz(3)
+  lastError   String?   @map("last_error")
+
+  @@index([publishedAt, createdAt])
+  @@map("outbox_messages")
+}
+
+/// Processed incoming messages: protection against redelivery.
+model InboxMessage {
+  messageId   String   @map("message_id")
+  handler     String
+  processedAt DateTime @default(now()) @map("processed_at") @db.Timestamptz(3)
+
+  @@id([messageId, handler])
+  @@index([processedAt])
+  @@map("inbox_messages")
+}
