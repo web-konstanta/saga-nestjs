@@ -1,0 +1,111 @@
+// orders_db database. Saga state plus the outbox/inbox service tables.
+
+generator client {
+  provider               = "prisma-client"
+  output                 = "../src/generated/prisma"
+  moduleFormat           = "cjs"
+  generatedFileExtension = "ts"
+  importFileExtension    = ""
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum SagaStatus {
+  STOCK_PENDING
+  PAYMENT_PENDING
+  COURIER_PENDING
+  COMPENSATING
+  CONFIRMED
+  CANCELLED
+  STUCK
+}
+
+enum SagaStep {
+  STOCK
+  PAYMENT
+  COURIER
+}
+
+model Saga {
+  id            String     @id @db.Uuid
+  orderId       String     @unique @map("order_id") @db.Uuid
+  customerId    String     @map("customer_id")
+  address       String
+  amountCents   Int        @map("amount_cents")
+  status        SagaStatus
+  /// Stack of successfully completed steps. Compensations unwind it from the top.
+  completed     SagaStep[]
+  /// The step whose reply the saga is waiting for right now.
+  awaiting      SagaStep?
+  reservationId String?    @map("reservation_id")
+  paymentId     String?    @map("payment_id")
+  courierId     String?    @map("courier_id")
+  failureReason String?    @map("failure_reason")
+  /// When waiting for the current step counts as failed. NULL means no timer is armed.
+  deadlineAt    DateTime?  @map("deadline_at") @db.Timestamptz(3)
+  createdAt     DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  items   SagaItem[]
+  history SagaLogEntry[]
+
+  @@index([deadlineAt])
+  @@index([createdAt])
+  @@map("sagas")
+}
+
+model SagaItem {
+  id         Int    @id @default(autoincrement())
+  sagaId     String @map("saga_id") @db.Uuid
+  sku        String
+  qty        Int
+  priceCents Int    @map("price_cents")
+
+  saga Saga @relation(fields: [sagaId], references: [id], onDelete: Cascade)
+
+  @@index([sagaId])
+  @@map("saga_items")
+}
+
+model SagaLogEntry {
+  id     BigInt   @id @default(autoincrement())
+  sagaId String   @map("saga_id") @db.Uuid
+  at     DateTime @default(now()) @db.Timestamptz(3)
+  note   String
+
+  saga Saga @relation(fields: [sagaId], references: [id], onDelete: Cascade)
+
+  @@index([sagaId, id])
+  @@map("saga_log")
+}
+
+// ─── @app/outbox service tables. Identical in every service. ───
+
+/// Outgoing messages: written in the same transaction as the business data;
+/// OutboxRelay sends them to RabbitMQ.
+model OutboxMessage {
+  id          String    @id @db.Uuid
+  routingKey  String    @map("routing_key")
+  payload     Json
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  publishedAt DateTime? @map("published_at") @db.Timestamptz(3)
+  attempts    Int       @default(0)
+  lockedUntil DateTime? @map("locked_until") @db.Timestamptz(3)
+  lastError   String?   @map("last_error")
+
+  @@index([publishedAt, createdAt])
+  @@map("outbox_messages")
+}
+
+/// Processed incoming messages: protection against redelivery.
+model InboxMessage {
+  messageId   String   @map("message_id")
+  handler     String
+  processedAt DateTime @default(now()) @map("processed_at") @db.Timestamptz(3)
+
+  @@id([messageId, handler])
+  @@index([processedAt])
+  @@map("inbox_messages")
+}
